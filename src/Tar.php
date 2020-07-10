@@ -12,6 +12,10 @@ namespace splitbrain\PHPArchive;
  * @author  Andreas Gohr <andi@splitbrain.org>
  * @package splitbrain\PHPArchive
  * @license MIT
+ * 
+ * Prime Mover WordPress Plugin Integration
+ * https://github.com/codex-m/php-archive
+ * @author Emerson Maningo (emerson@codexonics.com)
  */
 class Tar extends Archive
 {
@@ -50,7 +54,7 @@ class Tar extends Archive
      * @throws ArchiveIOException
      * @throws ArchiveIllegalCompressionException
      */
-    public function open($file)
+    public function open($file, $offset = 0)
     {
         $this->file = $file;
 
@@ -72,6 +76,10 @@ class Tar extends Archive
             throw new ArchiveIOException('Could not open file for reading: '.$this->file);
         }
         $this->closed = false;
+        
+        if ($offset) {
+            fseek($this->fh, $offset);
+        }
     }
 
     /**
@@ -129,55 +137,78 @@ class Tar extends Archive
      * @param int|string $strip either the number of path components or a fixed prefix to strip
      * @param string $exclude a regular expression of files to exclude
      * @param string $include a regular expression of files to include
+     * @param int $start Time start of extraction for retry purposes
+     * @param int $file_offset Offset of the file being extracted
+     * @param int $index Index loop for the file being extracted
+     * @param int $base_read_offset Base read offset of the tar being extracted
+     * @param int $blog_id Blog ID of WordPress site
      * @throws ArchiveIOException
      * @throws ArchiveCorruptedException
      * @return FileInfo[]
      */
-    public function extract($outdir, $strip = '', $exclude = '', $include = '')
+    public function extract($outdir, $strip = '', $exclude = '', $include = '', $start = 0, $file_offset = 0, $index = 0, $base_read_offset = 0, $blog_id = 0)
     {
         if ($this->closed || !$this->file) {
             throw new ArchiveIOException('Can not read from a closed archive');
         }
 
         $outdir = rtrim($outdir, '/');
-        @mkdir($outdir, 0777, true);
-        if (!is_dir($outdir)) {
-            throw new ArchiveIOException("Could not create directory '$outdir'");
-        }
-
+        if (!$file_offset) {
+            @mkdir($outdir, 0777, true);
+            if (!is_dir($outdir)) {
+                throw new ArchiveIOException("Could not create directory '$outdir'");
+            }
+        }        
+        $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
         $extracted = array();
-        while ($dat = $this->readbytes(512)) {
-            // read the file header
-            $header = $this->parseHeader($dat);
+        while ($dat = $this->readbytes(512)) {            
+            $this->maybeTestExtractionFileDelay();            
+            $header = $this->parseHeader($dat);            
+            
             if (!is_array($header)) {
                 continue;
             }
             $fileinfo = $this->header2fileinfo($header);
-
-            // apply strip rules
             $fileinfo->strip($strip);
 
-            // skip unwanted files
             if (!strlen($fileinfo->getPath()) || !$fileinfo->match($include, $exclude)) {
                 $this->skipbytes(ceil($header['size'] / 512) * 512);
                 continue;
             }
 
-            // create output directory
             $output    = $outdir.'/'.$fileinfo->getPath();
             $directory = ($fileinfo->getIsdir()) ? $output : dirname($output);
-            @mkdir($directory, 0777, true);
+            if (!$file_offset) {
+                @mkdir($directory, 0777, true);
+            }            
 
-            // extract data
+            $mode = 'wb';
+            if ($file_offset) {
+                $mode = 'ab';
+            }
             if (!$fileinfo->getIsdir()) {
-                $fp = @fopen($output, "wb");
+                $fp = @fopen($output, $mode);
                 if (!$fp) {
                     throw new ArchiveIOException('Could not open file for writing: '.$output);
                 }
 
                 $size = floor($header['size'] / 512);
-                for ($i = 0; $i < $size; $i++) {
+                if ($file_offset) {
+                    fseek($this->fh, $file_offset);
+                    $file_offset = 0;
+                }
+                for ($i = $index; $i < $size; $i++) {
+                    $this->maybeTestExtractionFileDelay();
                     fwrite($fp, $this->readbytes(512), 512);
+                    $offset = ftell($this->fh);
+                    
+                    if (microtime(true) - $start > $retry_timeout) {
+                        $index= $i + 1;
+                        fclose($fp);
+                        
+                        do_action('prime_mover_log_processed_events', "Time out reach, need to retry at offset $offset, base read offset $base_read_offset and index $index for file $output ", $blog_id, 'export', __FUNCTION__, $this);
+                        return ['tar_read_offset' => $offset, 'base_read_offset' => $base_read_offset, 'index' => $index];
+                    }                    
                 }
                 if (($header['size'] % 512) != 0) {
                     fwrite($fp, $this->readbytes(512), $header['size'] % 512);
@@ -187,19 +218,34 @@ class Tar extends Archive
                 @touch($output, $fileinfo->getMtime());
                 @chmod($output, $fileinfo->getMode());
             } else {
-                $this->skipbytes(ceil($header['size'] / 512) * 512); // the size is usually 0 for directories
+                $this->skipbytes(ceil($header['size'] / 512) * 512); 
             }
 
             if(is_callable($this->callback)) {
                 call_user_func($this->callback, $fileinfo);
             }
             $extracted[] = $fileinfo;
+            $index = 0;
+            $base_read_offset = ftell($this->fh);
         }
-
+       
+        do_action('prime_mover_log_processed_events', "Entire extraction is done.", $blog_id, 'export', __FUNCTION__, $this);
         $this->close();
         return $extracted;
     }
 
+    /**
+     * Maybe test extraction delay
+     */
+    private function maybeTestExtractionFileDelay()
+    {
+        $delay = 0;
+        if (defined('PRIME_MOVER_TEST_EXTRACTION_TAR_DELAY') && PRIME_MOVER_TEST_EXTRACTION_TAR_DELAY) {
+            $delay = (int)PRIME_MOVER_TEST_EXTRACTION_TAR_DELAY;
+            usleep($delay);
+        }
+    }
+    
     /**
      * Create a new TAR file
      *
@@ -209,7 +255,7 @@ class Tar extends Archive
      * @throws ArchiveIOException
      * @throws ArchiveIllegalCompressionException
      */
-    public function create($file = '')
+    public function create($file = '', $mode = 'wb')
     {
         $this->file   = $file;
         $this->memory = '';
@@ -222,11 +268,11 @@ class Tar extends Archive
             }
 
             if ($this->comptype === Archive::COMPRESS_GZIP) {
-                $this->fh = @gzopen($this->file, 'wb'.$this->complevel);
+                $this->fh = @gzopen($this->file, $mode . $this->complevel);
             } elseif ($this->comptype === Archive::COMPRESS_BZIP) {
                 $this->fh = @bzopen($this->file, 'w');
             } else {
-                $this->fh = @fopen($this->file, 'wb');
+                $this->fh = @fopen($this->file, $mode);        
             }
 
             if (!$this->fh) {
@@ -242,11 +288,14 @@ class Tar extends Archive
      *
      * @param string $file path to the original file
      * @param string|FileInfo $fileinfo either the name to us in archive (string) or a FileInfo oject with all meta data, empty to take from original
+     * @param int $start Start time of adding file (for retry purposes)
+     * @param int $file_position File position for subsequent reading.
+     * @param int $blog_id Blog ID of WordPress site.
      * @throws ArchiveCorruptedException when the file changes while reading it, the archive will be corrupt and should be deleted
      * @throws ArchiveIOException there was trouble reading the given file, it was not added
      * @throws FileInfoException trouble reading file info, it was not added
      */
-    public function addFile($file, $fileinfo = '')
+    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0)
     {
         if (is_string($fileinfo)) {
             $fileinfo = FileInfo::fromPath($file, $fileinfo);
@@ -255,41 +304,64 @@ class Tar extends Archive
         if ($this->closed) {
             throw new ArchiveIOException('Archive has been closed, files can no longer be added');
         }
-
-        $fp = @fopen($file, 'rb');
-        if (!$fp) {
-            throw new ArchiveIOException('Could not open file for reading: '.$file);
-        }
-
-        // create file header
-        $this->writeFileHeader($fileinfo);
-
-        // write data
-        $read = 0;
-        while (!feof($fp)) {
-            $data = fread($fp, 512);
-            $read += strlen($data);
-            if ($data === false) {
-                break;
+        
+        $fp = null;
+        if (is_file($file)) {            
+            do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this);
+            $fp = @fopen($file, 'rb');
+            
+            if (!$fp) {
+                throw new ArchiveIOException('Could not open file for reading: '.$file);
             }
-            if ($data === '') {
-                break;
+        }        
+        
+        if ($file_position && is_resource($fp)) {            
+            do_action('prime_mover_log_processed_events', "Resuming reading $file on position $file_position", $blog_id, 'export', __FUNCTION__, $this);
+            fseek($fp, $file_position);
+        } else {            
+            do_action('prime_mover_log_processed_events', "Writing header for file $file.", $blog_id, 'export', __FUNCTION__, $this);
+            $this->writeFileHeader($fileinfo);
+        }
+        $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
+        if (is_resource($fp)) {
+            while (!feof($fp)) {
+                $this->maybeTestAddFileDelay();
+                $data = fread($fp, 512);
+                $pos = ftell($fp);                
+                if ($data === false) {
+                    break;
+                }
+                if ($data === '') {
+                    break;
+                }
+                $packed = pack("a512", $data);
+                $this->writebytes($packed);
+                
+                if (microtime(true) - $start > $retry_timeout) {                    
+                    do_action('prime_mover_log_processed_events', "$retry_timeout seconds Time out reach while archiving $file on position $pos", $blog_id, 'export', __FUNCTION__, $this);
+                    fclose($fp);      
+                    $pos = (int)$pos;
+                    return $pos;
+                }                
             }
-            $packed = pack("a512", $data);
-            $this->writebytes($packed);
-        }
-        fclose($fp);
-
-        if($read != $fileinfo->getSize()) {
-            $this->close();
-            throw new ArchiveCorruptedException("The size of $file changed while reading, archive corrupted. read $read expected ".$fileinfo->getSize());
-        }
-
-        if(is_callable($this->callback)) {
-            call_user_func($this->callback, $fileinfo);
-        }
+            fclose($fp);
+        }   
+        
+        do_action('prime_mover_log_processed_events', "Successfully closed reading archiving $file.", $blog_id, 'export', __FUNCTION__, $this);      
+        return true;
     }
 
+    /**
+     * Maybe add test delay
+     */
+    private function maybeTestAddFileDelay()
+    {
+        $delay = 0;
+        if (defined('PRIME_MOVER_TEST_ADDFILE_TAR_DELAY') && PRIME_MOVER_TEST_ADDFILE_TAR_DELAY) {
+            $delay = (int)PRIME_MOVER_TEST_ADDFILE_TAR_DELAY;
+            usleep($delay);
+        }
+    }
     /**
      * Add a file to the current TAR archive using the given $data as content
      *
