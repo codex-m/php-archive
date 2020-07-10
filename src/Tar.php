@@ -291,18 +291,21 @@ class Tar extends Archive
      * @param int $start Start time of adding file (for retry purposes)
      * @param int $file_position File position for subsequent reading.
      * @param int $blog_id Blog ID of WordPress site.
-     * @throws ArchiveCorruptedException when the file changes while reading it, the archive will be corrupt and should be deleted
-     * @throws ArchiveIOException there was trouble reading the given file, it was not added
-     * @throws FileInfoException trouble reading file info, it was not added
+     * @param boolean $enable_retry Whether to enable retry
+     * 
+     * Returns:
+     * String in case of error
+     * Integer in case of retries
+     * Boolean  true in case of success (done)
      */
-    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0)
+    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0, $enable_retry = false)
     {
         if (is_string($fileinfo)) {
             $fileinfo = FileInfo::fromPath($file, $fileinfo);
         }
 
         if ($this->closed) {
-            throw new ArchiveIOException('Archive has been closed, files can no longer be added');
+            return esc_html__('Archive has been closed, files can no longer be added', 'prime-mover');
         }
         
         $fp = null;
@@ -310,12 +313,12 @@ class Tar extends Archive
             do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this);
             $fp = @fopen($file, 'rb');
             
-            if (!$fp) {
-                throw new ArchiveIOException('Could not open file for reading: '.$file);
+            if (!$fp) {                
+                return sprintf(esc_html__('Could not open file for reading: %s', 'prime-mover'), $file);
             }
         }        
         
-        if ($file_position && is_resource($fp)) {            
+        if ($file_position && is_resource($fp) && $enable_retry) {            
             do_action('prime_mover_log_processed_events', "Resuming reading $file on position $file_position", $blog_id, 'export', __FUNCTION__, $this);
             fseek($fp, $file_position);
         } else {            
@@ -337,7 +340,7 @@ class Tar extends Archive
                 $packed = pack("a512", $data);
                 $this->writebytes($packed);
                 
-                if (microtime(true) - $start > $retry_timeout) {                    
+                if ($enable_retry && (microtime(true) - $start > $retry_timeout)) {                    
                     do_action('prime_mover_log_processed_events', "$retry_timeout seconds Time out reach while archiving $file on position $pos", $blog_id, 'export', __FUNCTION__, $this);
                     fclose($fp);      
                     $pos = (int)$pos;
