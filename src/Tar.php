@@ -116,6 +116,123 @@ class Tar extends Archive
     }
 
     /**
+     * Decode the given tar file header
+     *
+     * @param string $block a 512 byte block containing the header data
+     * @return array|false returns false when this was a null block
+     * @throws ArchiveCorruptedException
+     */
+    protected function parseHeader($block, $ret_errors = false)
+    {
+        if (!$block || strlen($block) != 512) {
+            if ($ret_errors) {
+                return false;
+            } else {
+                throw new ArchiveCorruptedException('Unexpected length of header');
+            }
+        }
+        
+        // null byte blocks are ignored
+        if(trim($block) === '') return false;
+        
+        for ($i = 0, $chks = 0; $i < 148; $i++) {
+            $chks += ord($block[$i]);
+        }
+        
+        for ($i = 156, $chks += 256; $i < 512; $i++) {
+            $chks += ord($block[$i]);
+        }
+        
+        $header = @unpack(
+            "a100filename/a8perm/a8uid/a8gid/a12size/a12mtime/a8checksum/a1typeflag/a100link/a6magic/a2version/a32uname/a32gname/a8devmajor/a8devminor/a155prefix",
+            $block
+            );
+        if (!$header) {
+            if ($ret_errors) {
+                return false;
+            } else {
+                throw new ArchiveCorruptedException('Failed to parse header');
+            }
+        }
+        
+        $return['checksum'] = OctDec(trim($header['checksum']));
+        if ($return['checksum'] != $chks) {
+            if ($ret_errors) {
+                return false;
+            } else {
+                throw new ArchiveCorruptedException('Header does not match it\'s checksum');
+            }
+        }
+        
+        $return['filename'] = trim($header['filename']);
+        $return['perm']     = OctDec(trim($header['perm']));
+        $return['uid']      = OctDec(trim($header['uid']));
+        $return['gid']      = OctDec(trim($header['gid']));
+        $return['size']     = OctDec(trim($header['size']));
+        $return['mtime']    = OctDec(trim($header['mtime']));
+        $return['typeflag'] = $header['typeflag'];
+        $return['link']     = trim($header['link']);
+        $return['uname']    = trim($header['uname']);
+        $return['gname']    = trim($header['gname']);
+        
+        // Handle ustar Posix compliant path prefixes
+        if (trim($header['prefix'])) {
+            $return['filename'] = trim($header['prefix']).'/'.$return['filename'];
+        }
+        
+        // Handle Long-Link entries from GNU Tar
+        if ($return['typeflag'] == 'L') {
+            // following data block(s) is the filename
+            $filename = trim($this->readbytes(ceil($return['size'] / 512) * 512));
+            // next block is the real header
+            $block  = $this->readbytes(512);
+            $return = $this->parseHeader($block);
+            // overwrite the filename
+            $return['filename'] = $filename;
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Checks if Prime Mover TarBall package
+     * File extension should be checked first before using this function
+     * Returns false if not a Prime Mover Tarball
+     * Otherwise returns the Prime Mover tarball configuration
+     * @return boolean|string
+     */
+    public function isPrimeMoverTarBall()
+    {
+        if ($this->closed || !$this->file) {
+            return false;
+        }
+        while ($read = $this->readbytes(512)) {
+            $header = $this->parseHeader($read, true);
+            if (!is_array($header)) {
+                continue;
+            }            
+            $fileinfo = $this->header2fileinfo($header);
+            $pathtolog = $fileinfo->getPath();
+            $filename = basename($pathtolog);
+            if ('tar-config.json' === $filename) {
+                
+                $json = '';
+                $size = floor($header['size'] / 512);                
+                for ($i = 0; $i < $size; $i++) {                    
+                    $json .= $this->readbytes(512);
+                }
+                if (($header['size'] % 512) != 0) {
+                    $json .= $this->readbytes(512);
+                }               
+                $this->close();
+                return $json;
+            }
+        }        
+        $this->close();
+        return false;
+    }
+    
+    /**
      * Extract an existing TAR archive
      *
      * The $strip parameter allows you to strip a certain number of path components from the filenames
@@ -622,73 +739,6 @@ class Tar extends Archive
 
         $chks = pack("a8", sprintf("%6s ", decoct($chks)));
         $this->writebytes($chks.$data_last);
-    }
-
-    /**
-     * Decode the given tar file header
-     *
-     * @param string $block a 512 byte block containing the header data
-     * @return array|false returns false when this was a null block
-     * @throws ArchiveCorruptedException
-     */
-    protected function parseHeader($block)
-    {
-        if (!$block || strlen($block) != 512) {
-            throw new ArchiveCorruptedException('Unexpected length of header');
-        }
-
-        // null byte blocks are ignored
-        if(trim($block) === '') return false;
-
-        for ($i = 0, $chks = 0; $i < 148; $i++) {
-            $chks += ord($block[$i]);
-        }
-
-        for ($i = 156, $chks += 256; $i < 512; $i++) {
-            $chks += ord($block[$i]);
-        }
-
-        $header = @unpack(
-            "a100filename/a8perm/a8uid/a8gid/a12size/a12mtime/a8checksum/a1typeflag/a100link/a6magic/a2version/a32uname/a32gname/a8devmajor/a8devminor/a155prefix",
-            $block
-        );
-        if (!$header) {
-            throw new ArchiveCorruptedException('Failed to parse header');
-        }
-
-        $return['checksum'] = OctDec(trim($header['checksum']));
-        if ($return['checksum'] != $chks) {
-            throw new ArchiveCorruptedException('Header does not match it\'s checksum');
-        }
-
-        $return['filename'] = trim($header['filename']);
-        $return['perm']     = OctDec(trim($header['perm']));
-        $return['uid']      = OctDec(trim($header['uid']));
-        $return['gid']      = OctDec(trim($header['gid']));
-        $return['size']     = OctDec(trim($header['size']));
-        $return['mtime']    = OctDec(trim($header['mtime']));
-        $return['typeflag'] = $header['typeflag'];
-        $return['link']     = trim($header['link']);
-        $return['uname']    = trim($header['uname']);
-        $return['gname']    = trim($header['gname']);
-
-        // Handle ustar Posix compliant path prefixes
-        if (trim($header['prefix'])) {
-            $return['filename'] = trim($header['prefix']).'/'.$return['filename'];
-        }
-
-        // Handle Long-Link entries from GNU Tar
-        if ($return['typeflag'] == 'L') {
-            // following data block(s) is the filename
-            $filename = trim($this->readbytes(ceil($return['size'] / 512) * 512));
-            // next block is the real header
-            $block  = $this->readbytes(512);
-            $return = $this->parseHeader($block);
-            // overwrite the filename
-            $return['filename'] = $filename;
-        }
-
-        return $return;
     }
 
     /**
