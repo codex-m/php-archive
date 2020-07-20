@@ -28,6 +28,9 @@ class Tar extends Archive
     protected $closed = true;
     protected $writeaccess = false;
 
+    const FILE_ENCRYPTION_BLOCKS = 32;
+    const CIPHER_METHOD = 'AES-256-CBC';
+    
     /**
      * Sets the compression to use
      *
@@ -233,8 +236,9 @@ class Tar extends Archive
     }
     
     /**
-     * Extract an existing TAR archive
-     *
+     * Extract an existing TAR archive 
+     * If encryption key is passed, it will automatically decrypt encrypted files inside the archive.
+     * 
      * The $strip parameter allows you to strip a certain number of path components from the filenames
      * found in the tar file, similar to the --strip-components feature of GNU tar. This is triggered when
      * an integer is passed as $strip.
@@ -258,17 +262,31 @@ class Tar extends Archive
      * @param int $file_offset Offset of the file being extracted
      * @param int $index Index loop for the file being extracted
      * @param int $base_read_offset Base read offset of the tar being extracted
+     * @param int $blog_id Blog ID of WordPress site (always 1 in single-site)
+     * @param string $key Encryption key $this
+     * @param string $iv Initialization vector
      * @param int $blog_id Blog ID of WordPress site
      * @throws ArchiveIOException
      * @throws ArchiveCorruptedException
      * @return FileInfo[]
      */
-    public function extract($outdir, $strip = '', $exclude = '', $include = '', $start = 0, $file_offset = 0, $index = 0, $base_read_offset = 0, $blog_id = 0)
+    public function extract($outdir, $strip = '', $exclude = '', $include = '', $start = 0, $file_offset = 0, $index = 0, $base_read_offset = 0, $blog_id = 0, $key = '', $iv = '')
     {
         if ($this->closed || !$this->file) {
             throw new ArchiveIOException('Can not read from a closed archive');
         }
-
+        $decrypt = false;
+        if ($key) {
+            $decrypt = true;
+        }
+        if ($decrypt) {
+            $key = substr(sha1($key, true), 0, 16);
+        }
+        
+        if ($decrypt && $iv) {
+            $iv = base64_decode($iv);
+        }
+        
         $outdir = rtrim($outdir, '/');
         if (!$file_offset) {
             @mkdir($outdir, 0777, true);
@@ -313,22 +331,44 @@ class Tar extends Archive
                 if ($file_offset) {
                     fseek($this->fh, $file_offset);
                     $file_offset = 0;
-                }
+                } 
+                
+                if (!$file_offset && $decrypt) {
+                    $iv = fread($this->fh, 16);
+                }               
+                
                 for ($i = $index; $i < $size; $i++) {
-                    $this->maybeTestExtractionFileDelay();
-                    fwrite($fp, $this->readbytes(512), 512);
-                    $offset = ftell($this->fh);
+                    $this->maybeTestExtractionFileDelay();                    
+                    if ($decrypt) {
+                        $block_size = self::FILE_ENCRYPTION_BLOCKS;
+                        $ciphertext = fread($this->fh, 16 * ($block_size  + 1));
+                        $plaintext = openssl_decrypt($ciphertext, self::CIPHER_METHOD, $key,  OPENSSL_RAW_DATA, $iv);
+                        $iv = substr($ciphertext, 0, 16);
+                        fwrite($fp, $plaintext, 512);
+                    } else {
+                        fwrite($fp, $this->readbytes(512), 512);                     
+                    }
                     
+                    $offset = ftell($this->fh);                    
                     if (microtime(true) - $start > $retry_timeout) {
                         $index= $i + 1;
                         fclose($fp);
                         
-                        do_action('prime_mover_log_processed_events', "Time out reach, need to retry at offset $offset, base read offset $base_read_offset and index $index for file $output ", $blog_id, 'export', __FUNCTION__, $this);
-                        return ['tar_read_offset' => $offset, 'base_read_offset' => $base_read_offset, 'index' => $index];
+                        do_action('prime_mover_log_processed_events', "Time out reach, need to retry at offset $offset, base read offset $base_read_offset and index $index for file $output ", $blog_id, 'export', __FUNCTION__, $this);                        
+                        return ['tar_read_offset' => $offset, 'base_read_offset' => $base_read_offset, 'index' => $index, 'iv' => base64_encode($iv)];
                     }                    
                 }
                 if (($header['size'] % 512) != 0) {
-                    fwrite($fp, $this->readbytes(512), $header['size'] % 512);
+                    if ($decrypt) {
+                        $block_size = self::FILE_ENCRYPTION_BLOCKS;
+                        $ciphertext = fread($this->fh, 16 * ($block_size + 1));
+                        $plaintext = openssl_decrypt($ciphertext, self::CIPHER_METHOD, $key,  OPENSSL_RAW_DATA, $iv);
+                        
+                        fwrite($fp, $plaintext, $header['size'] % 512);
+                    } else {
+                        
+                        fwrite($fp, $this->readbytes(512), $header['size'] % 512);
+                    }
                 }
 
                 fclose($fp);
@@ -409,22 +449,33 @@ class Tar extends Archive
      * @param int $file_position File position for subsequent reading.
      * @param int $blog_id Blog ID of WordPress site.
      * @param boolean $enable_retry Whether to enable retry
-     * 
+     * @param string $key Encryption key (optional, enables encryption when key is provided)
+     * @param string $iv Initialization vector (used only when encryption package)
      * Returns:
      * String in case of error
-     * Integer in case of retries
+     * Array in case of retries
      * Boolean  true in case of success (done)
      */
-    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0, $enable_retry = false)
+    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0, $enable_retry = false, $key = '', $iv = '')
     {
+        $encrypt = false;
+        if ($key) {
+            $encrypt = true;
+        }
+        if ($iv && $encrypt) {
+            $iv = base64_decode($iv);
+        }
+        
         if (is_string($fileinfo)) {
             $fileinfo = FileInfo::fromPath($file, $fileinfo);
         }
-
+        $retried = false;
         if ($this->closed) {
             return esc_html__('Archive has been closed, files can no longer be added', 'prime-mover');
         }
-        
+        if ($key) {
+            $key = substr(sha1($key, true), 0, 16);
+        }
         $fp = null;
         if (is_file($file)) {            
             do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this);
@@ -435,15 +486,23 @@ class Tar extends Archive
             }
         }        
         
-        if ($file_position && is_resource($fp) && $enable_retry) {            
+        if ($file_position && is_resource($fp) && $enable_retry) { 
+            $retried = true;
             do_action('prime_mover_log_processed_events', "Resuming reading $file on position $file_position", $blog_id, 'export', __FUNCTION__, $this);
             fseek($fp, $file_position);
         } else {            
             do_action('prime_mover_log_processed_events', "Writing header for file $file.", $blog_id, 'export', __FUNCTION__, $this);
             $this->writeFileHeader($fileinfo);
         }
+        if ($encrypt && ! $iv) {
+            $iv = openssl_random_pseudo_bytes(16);
+        }
+        
         $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
         if (is_resource($fp)) {
+            if (!$retried && $encrypt) {
+                $this->writebytes($iv);
+            }
             while (!feof($fp)) {
                 $this->maybeTestAddFileDelay();
                 $data = fread($fp, 512);
@@ -454,14 +513,20 @@ class Tar extends Archive
                 if ($data === '') {
                     break;
                 }
-                $packed = pack("a512", $data);
-                $this->writebytes($packed);
-                
+                $packed = pack("a512", $data);                
+                if ($encrypt) {
+                    $ciphertext = openssl_encrypt($packed, self::CIPHER_METHOD, $key, OPENSSL_RAW_DATA, $iv);                    
+                    $iv = substr($ciphertext, 0, 16);
+                    $this->writebytes($ciphertext);
+                } else {
+                    $this->writebytes($packed);
+                }
+
                 if ($enable_retry && (microtime(true) - $start > $retry_timeout)) {                    
                     do_action('prime_mover_log_processed_events', "$retry_timeout seconds Time out reach while archiving $file on position $pos", $blog_id, 'export', __FUNCTION__, $this);
                     fclose($fp);      
                     $pos = (int)$pos;
-                    return $pos;
+                    return ['tar_add_offset' => $pos, 'iv' => base64_encode($iv)];                    
                 }                
             }
             fclose($fp);
