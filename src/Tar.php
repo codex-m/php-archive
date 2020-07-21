@@ -275,18 +275,9 @@ class Tar extends Archive
         if ($this->closed || !$this->file) {
             throw new ArchiveIOException('Can not read from a closed archive');
         }
-        $decrypt = false;
         if ($key) {
-            $decrypt = true;
-        }
-        if ($decrypt) {
             $key = substr(sha1($key, true), 0, 16);
-        }
-        
-        if ($decrypt && $iv) {
-            $iv = base64_decode($iv);
-        }
-        
+        }        
         $outdir = rtrim($outdir, '/');
         if (!$file_offset) {
             @mkdir($outdir, 0777, true);
@@ -311,7 +302,7 @@ class Tar extends Archive
                 continue;
             }
 
-            $output    = $outdir.'/'.$fileinfo->getPath();
+            $output = $outdir.'/'.$fileinfo->getPath();
             $directory = ($fileinfo->getIsdir()) ? $output : dirname($output);
             if (!$file_offset) {
                 @mkdir($directory, 0777, true);
@@ -321,6 +312,7 @@ class Tar extends Archive
             if ($file_offset) {
                 $mode = 'ab';
             }
+            
             if (!$fileinfo->getIsdir()) {
                 $fp = @fopen($output, $mode);
                 if (!$fp) {
@@ -331,11 +323,16 @@ class Tar extends Archive
                 if ($file_offset) {
                     fseek($this->fh, $file_offset);
                     $file_offset = 0;
-                } 
+                }                           
+
+                $decrypt = $this->maybeDecrypt($header, $key);                                
+                if ($decrypt && $iv) {
+                    $iv = base64_decode($iv);
+                }
                 
-                if (!$file_offset && $decrypt) {
+                if (!$file_offset && $decrypt) {                    
                     $iv = fread($this->fh, 16);
-                }               
+                }   
                 
                 for ($i = $index; $i < $size; $i++) {
                     $this->maybeTestExtractionFileDelay();                    
@@ -383,6 +380,7 @@ class Tar extends Archive
             }
             $extracted[] = $fileinfo;
             $index = 0;
+            $iv = '';
             $base_read_offset = ftell($this->fh);
         }
        
@@ -391,6 +389,17 @@ class Tar extends Archive
         return $extracted;
     }
 
+    /**
+     * Checks if a file needs to be decrypted depending on its type flag header.
+     * @param array $header
+     * @param string $key
+     * @return boolean
+     */
+    protected function maybeDecrypt($header = [], $key = '')
+    {        
+        return (!empty($header['typeflag']) && 'P' === $header['typeflag'] && $key);
+    }
+    
     /**
      * Maybe test extraction delay
      */
@@ -492,7 +501,7 @@ class Tar extends Archive
             fseek($fp, $file_position);
         } else {            
             do_action('prime_mover_log_processed_events', "Writing header for file $file.", $blog_id, 'export', __FUNCTION__, $this);
-            $this->writeFileHeader($fileinfo);
+            $this->writeFileHeader($fileinfo, $encrypt);
         }
         if ($encrypt && ! $iv) {
             $iv = openssl_random_pseudo_bytes(16);
@@ -731,12 +740,15 @@ class Tar extends Archive
 
     /**
      * Write the given file meta data as header
-     *
      * @param FileInfo $fileinfo
-     * @throws ArchiveIOException
+     * @param boolean $encrypted
      */
-    protected function writeFileHeader(FileInfo $fileinfo)
+    protected function writeFileHeader(FileInfo $fileinfo, $encrypted = false)
     {
+        $typeflag = $fileinfo->getIsdir() ? '5' : '0';
+        if ($encrypted && '5' !== $typeflag) {
+            $typeflag = "P";
+        }
         $this->writeRawFileHeader(
             $fileinfo->getPath(),
             $fileinfo->getUid(),
@@ -744,7 +756,7 @@ class Tar extends Archive
             $fileinfo->getMode(),
             $fileinfo->getSize(),
             $fileinfo->getMtime(),
-            $fileinfo->getIsdir() ? '5' : '0'
+            $typeflag
         );
     }
 
@@ -823,8 +835,16 @@ class Tar extends Archive
         $fileinfo->setMtime($header['mtime']);
         $fileinfo->setOwner($header['uname']);
         $fileinfo->setGroup($header['gname']);
-        $fileinfo->setIsdir((bool) $header['typeflag']);
-
+        
+        $headerflag = $header['typeflag'];
+        $typeflag = true;
+        if ("P" === $headerflag) {            
+            $typeflag = false;
+        } else {            
+            $typeflag = (bool) $header['typeflag'];
+        }
+        
+        $fileinfo->setIsdir($typeflag);
         return $fileinfo;
     }
 
