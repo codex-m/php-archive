@@ -217,7 +217,7 @@ class Tar extends Archive
             $fileinfo = $this->header2fileinfo($header);
             $pathtolog = $fileinfo->getPath();
             $filename = basename($pathtolog);
-            if ('tar-config.json' === $filename) {
+            if (PRIME_MOVER_WPRIME_CONFIG === $filename) {
                 
                 $json = '';
                 $size = floor($header['size'] / 512);                
