@@ -279,9 +279,8 @@ class Tar extends Archive
             $key = substr(sha1($key, true), 0, 16);
         }        
         $outdir = rtrim($outdir, '/');
-        if (!$file_offset) {
-            @mkdir($outdir, 0777, true);
-            if (!is_dir($outdir)) {
+        if (!$file_offset) {            
+            if (!wp_mkdir_p($outdir)) {
                 throw new ArchiveIOException("Could not create directory '$outdir'");
             }
         }        
@@ -304,8 +303,8 @@ class Tar extends Archive
 
             $output = $outdir.'/'.$fileinfo->getPath();
             $directory = ($fileinfo->getIsdir()) ? $output : dirname($output);
-            if (!$file_offset) {
-                @mkdir($directory, 0777, true);
+            if (!$file_offset) {                
+                wp_mkdir_p($directory);
             }            
 
             $mode = 'wb';
