@@ -119,6 +119,51 @@ class Tar extends Archive
     }
 
     /**
+     * Checks if a WPRIME archive is not corrupted
+     * This should only be used after identifying the archive is WPRIME.
+     * 
+     * Returns TRUE if archive is clean (not corrupted) otherwise FALSE.
+     * @return boolean
+     */
+    public function isArchiveCorrupted()
+    {
+        $buffer_size = 512;
+        fseek($this->fh, 0, SEEK_END);
+        $pos = ftell($this->fh);
+        $clean = false;
+        while (0 !==$pos)
+        {
+            $read_size = $pos >= $buffer_size ? $buffer_size : $pos;
+            fseek($this->fh, $pos - $read_size, SEEK_SET);            
+            $read = fread($this->fh, $read_size);            
+            $header = $this->parseHeader($read, true);            
+            if (!is_array($header)) {
+                $pos -= $read_size;
+                if (!$pos) { 
+                    break;
+                }
+                continue;
+            }            
+            $fileinfo = $this->header2fileinfo($header);
+            $pathtolog = $fileinfo->getPath();
+            $filename = basename($pathtolog);
+            if ($filename && PRIME_MOVER_WPRIME_CLOSED_IDENTIFIER === $filename) {
+                $clean = true;
+                
+            }            
+            if ($filename) {
+                break;
+            }            
+            $pos -= $read_size;
+            if (!$pos) {
+                break;
+            }
+        }
+        fclose($this->fh);
+        return $clean;
+    }
+    
+    /**
      * Decode the given tar file header
      *
      * @param string $block a 512 byte block containing the header data
@@ -286,7 +331,8 @@ class Tar extends Archive
         }        
         $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
         $extracted = array();
-        while ($dat = $this->readbytes(512)) {            
+        while ($dat = $this->readbytes(512)) {    
+            $processing_retry = false;
             $this->maybeTestExtractionFileDelay();            
             $header = $this->parseHeader($dat);            
             
@@ -320,16 +366,17 @@ class Tar extends Archive
 
                 $size = floor($header['size'] / 512);
                 if ($file_offset) {
+                    $processing_retry = true;
                     fseek($this->fh, $file_offset);
                     $file_offset = 0;
                 }                           
 
                 $decrypt = $this->maybeDecrypt($header, $key);                                
-                if ($decrypt && $iv) {
+                if ($decrypt && $iv && $processing_retry) {
                     $iv = base64_decode($iv);
                 }
                 
-                if (!$file_offset && $decrypt) {                    
+                if (!$file_offset && $decrypt && !$processing_retry) {                    
                     $iv = fread($this->fh, 16);
                 }   
                 
