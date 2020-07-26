@@ -313,7 +313,7 @@ class Tar extends Archive
      * @param int $blog_id Blog ID of WordPress site
      * @throws ArchiveIOException
      * @throws ArchiveCorruptedException
-     * @return FileInfo[]
+     * @return boolean
      */
     public function extract($outdir, $strip = '', $exclude = '', $include = '', $start = 0, $file_offset = 0, $index = 0, $base_read_offset = 0, $blog_id = 0, $key = '', $iv = '')
     {
@@ -329,8 +329,7 @@ class Tar extends Archive
                 throw new ArchiveIOException("Could not create directory '$outdir'");
             }
         }        
-        $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
-        $extracted = array();
+        $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);        
         while ($dat = $this->readbytes(512)) {    
             $processing_retry = false;
             $this->maybeTestExtractionFileDelay();            
@@ -423,8 +422,7 @@ class Tar extends Archive
 
             if(is_callable($this->callback)) {
                 call_user_func($this->callback, $fileinfo);
-            }
-            $extracted[] = $fileinfo;
+            }            
             $index = 0;
             $iv = '';
             $base_read_offset = ftell($this->fh);
@@ -432,7 +430,7 @@ class Tar extends Archive
        
         do_action('prime_mover_log_processed_events', "Entire extraction is done.", $blog_id, 'export', __FUNCTION__, $this);
         $this->close();
-        return $extracted;
+        return true;
     }
 
     /**
@@ -506,12 +504,14 @@ class Tar extends Archive
      * @param boolean $enable_retry Whether to enable retry
      * @param string $key Encryption key (optional, enables encryption when key is provided)
      * @param string $iv Initialization vector (used only when encryption package)
+     * @param int $bytes_written Total bytes written
+     * 
      * Returns:
      * String in case of error
      * Array in case of retries
-     * Boolean  true in case of success (done)
+     * Integer in case of success, indicating the number of bytes written.
      */
-    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0, $enable_retry = false, $key = '', $iv = '')
+    public function addFile($file, $fileinfo = '', $start = 0, $file_position = 0, $blog_id = 0, $enable_retry = false, $key = '', $iv = '', $bytes_written = 0)
     {
         $encrypt = false;
         if ($key) {
@@ -556,7 +556,7 @@ class Tar extends Archive
         $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);
         if (is_resource($fp)) {
             if (!$retried && $encrypt) {
-                $this->writebytes($iv);
+                $bytes_written += $this->writebytes($iv);
             }
             while (!feof($fp)) {
                 $this->maybeTestAddFileDelay();
@@ -572,23 +572,23 @@ class Tar extends Archive
                 if ($encrypt) {
                     $ciphertext = openssl_encrypt($packed, self::CIPHER_METHOD, $key, OPENSSL_RAW_DATA, $iv);                    
                     $iv = substr($ciphertext, 0, 16);
-                    $this->writebytes($ciphertext);
+                    $bytes_written += $this->writebytes($ciphertext);
                 } else {
-                    $this->writebytes($packed);
+                    $bytes_written += $this->writebytes($packed);
                 }
 
                 if ($enable_retry && (microtime(true) - $start > $retry_timeout)) {                    
                     do_action('prime_mover_log_processed_events', "$retry_timeout seconds Time out reach while archiving $file on position $pos", $blog_id, 'export', __FUNCTION__, $this);
                     fclose($fp);      
                     $pos = (int)$pos;
-                    return ['tar_add_offset' => $pos, 'iv' => base64_encode($iv)];                    
+                    return ['tar_add_offset' => $pos, 'iv' => base64_encode($iv), 'bytes_written' => $bytes_written];                    
                 }                
             }
             fclose($fp);
         }   
         
         do_action('prime_mover_log_processed_events', "Successfully closed reading archiving $file.", $blog_id, 'export', __FUNCTION__, $this);      
-        return true;
+        return $bytes_written;
     }
 
     /**
