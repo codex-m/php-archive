@@ -203,7 +203,7 @@ class Tar extends Archive
             }
         }
         
-        $return['checksum'] = OctDec(trim($header['checksum']));
+        $return['checksum'] = @OctDec(trim($header['checksum']));
         if ($return['checksum'] != $chks) {
             if ($ret_errors) {
                 return false;
