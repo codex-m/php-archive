@@ -254,14 +254,21 @@ class Tar extends Archive
         if ($this->closed || !$this->file) {
             return false;
         }
+        $bytes_read = 0;
         while ($read = $this->readbytes(512)) {
             $header = $this->parseHeader($read, true);
+            $bytes_read = ftell($this->fh);
+            if ($bytes_read >= 10240) {
+                $this->close();
+                return false;
+            }
             if (!is_array($header)) {
                 continue;
             }            
             $fileinfo = $this->header2fileinfo($header);
             $pathtolog = $fileinfo->getPath();
-            $filename = basename($pathtolog);
+            $filename = basename($pathtolog);            
+            
             if (PRIME_MOVER_WPRIME_CONFIG === $filename) {
                 
                 $json = '';
