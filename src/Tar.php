@@ -66,13 +66,20 @@ class Tar extends Archive
             $this->setCompression($this->complevel, $this->filetype($file));
         }
 
+        $opts= [
+            "ssl"=>[
+                "verify_peer" => false,
+                "verify_peer_name" => false,
+            ],
+        ];  
+        
         // open file handles
         if ($this->comptype === Archive::COMPRESS_GZIP) {
             $this->fh = @gzopen($this->file, 'rb');
         } elseif ($this->comptype === Archive::COMPRESS_BZIP) {
             $this->fh = @bzopen($this->file, 'r');
         } else {
-            $this->fh = @fopen($this->file, 'rb');
+            $this->fh = @fopen($this->file, 'rb', false, stream_context_create($opts));
         }
 
         if (!$this->fh) {
