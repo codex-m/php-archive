@@ -51,13 +51,15 @@ class Tar extends Archive
     }
 
     /**
-     * Open an existing TAR file for reading
-     *
      * @param string $file
+     * @param int $offset
+     * @param string $source_is_url
      * @throws ArchiveIOException
      * @throws ArchiveIllegalCompressionException
+     * {@inheritDoc}
+     * @see \splitbrain\PHPArchive\Archive::open()
      */
-    public function open($file, $offset = 0)
+    public function open($file, $offset = 0, $source_is_url = false)
     {
         $this->file = $file;
 
@@ -65,7 +67,7 @@ class Tar extends Archive
         if ($this->comptype == Tar::COMPRESS_AUTO) {
             $this->setCompression($this->complevel, $this->filetype($file));
         }
-
+       
         $opts= [
             "ssl"=>[
                 "verify_peer" => false,
@@ -79,7 +81,11 @@ class Tar extends Archive
         } elseif ($this->comptype === Archive::COMPRESS_BZIP) {
             $this->fh = @bzopen($this->file, 'r');
         } else {
-            $this->fh = @fopen($this->file, 'rb', false, stream_context_create($opts));
+            if ($source_is_url) {
+                $this->fh = @fopen($this->file, 'rb', false, stream_context_create($opts));
+            } else {
+                $this->fh = @fopen($this->file, 'rb');
+            }            
         }
 
         if (!$this->fh) {
