@@ -144,6 +144,8 @@ class Tar extends Archive
         fseek($this->fh, 0, SEEK_END);
         $pos = ftell($this->fh);
         $clean = false;
+        $bytes_read = 0;
+        
         while (0 !==$pos)
         {
             $read_size = $pos >= $buffer_size ? $buffer_size : $pos;
@@ -152,11 +154,16 @@ class Tar extends Archive
             $header = $this->parseHeader($read, true);            
             if (!is_array($header)) {
                 $pos -= $read_size;
+                $bytes_read += $read_size;
+                if ($bytes_read >= 65536) {
+                    break;
+                }
                 if (!$pos) { 
                     break;
                 }
                 continue;
-            }            
+            }       
+            
             $fileinfo = $this->header2fileinfo($header);
             $pathtolog = $fileinfo->getPath();
             $filename = basename($pathtolog);
