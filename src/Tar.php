@@ -228,7 +228,7 @@ class Tar extends Archive
             if ($ret_errors) {
                 return false;
             } else {
-                throw new ArchiveCorruptedException('Header does not match it\'s checksum');
+                return false;
             }
         }
         
