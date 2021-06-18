@@ -387,7 +387,12 @@ class Tar extends Archive
             if (!$fileinfo->getIsdir()) {
                 $fp = @fopen($output, $mode);
                 if (!$fp) {
-                    throw new ArchiveIOException('Could not open file for writing: '.$output);
+                    $error_msg = error_get_last();
+                    if (is_array($error_msg) && !empty($error_msg['message'])) {
+                        throw new ArchiveIOException($error_msg['message']);
+                    } else {
+                        throw new ArchiveIOException('Could not open file for writing: ' . $output);
+                    }                    
                 }
 
                 $size = floor($header['size'] / 512);
