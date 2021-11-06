@@ -565,7 +565,7 @@ class Tar extends Archive
         }
         $fp = null;
         if (is_file($file)) {            
-            do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this);
+            do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this, true);
             $fp = @fopen($file, 'rb');
             
             if (!$fp) {                
@@ -578,7 +578,7 @@ class Tar extends Archive
             do_action('prime_mover_log_processed_events', "Resuming reading $file on position $file_position", $blog_id, 'export', __FUNCTION__, $this);
             fseek($fp, $file_position);
         } else {            
-            do_action('prime_mover_log_processed_events', "Writing header for file $file.", $blog_id, 'export', __FUNCTION__, $this);
+            do_action('prime_mover_log_processed_events', "Writing header for file $file.", $blog_id, 'export', __FUNCTION__, $this, true);
             $this->writeFileHeader($fileinfo, $encrypt);
         }
         if ($encrypt && ! $iv) {
@@ -619,7 +619,7 @@ class Tar extends Archive
             fclose($fp);
         }   
         
-        do_action('prime_mover_log_processed_events', "Successfully closed reading archiving $file.", $blog_id, 'export', __FUNCTION__, $this);      
+        do_action('prime_mover_log_processed_events', "Successfully closed reading archiving $file.", $blog_id, 'export', __FUNCTION__, $this, true);      
         return $bytes_written;
     }
 
