@@ -388,8 +388,10 @@ class Tar extends Archive
                 $fp = @fopen($output, $mode);
                 if (!$fp) {
                     $error_msg = error_get_last();
-                    if (is_array($error_msg) && !empty($error_msg['message'])) {
-                        throw new ArchiveIOException($error_msg['message']);
+                    if (is_array($error_msg) && !empty($error_msg['message'])) {                        
+                        $extr_error_msg = $error_msg['message'];
+                        do_action('prime_mover_log_processed_events', "File cannot be extracted: $output - ERROR: $extr_error_msg", $blog_id, 'export', __FUNCTION__, $this);
+                        continue;                        
                     } else {
                         throw new ArchiveIOException('Could not open file for writing: ' . $output);
                     }                    
