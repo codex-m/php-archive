@@ -570,7 +570,8 @@ class Tar extends Archive
             do_action('prime_mover_log_processed_events', "Opening $file for archiving", $blog_id, 'export', __FUNCTION__, $this, true);
             $fp = @PrimeMoverBridgeIO::call('fopen', $file, 'rb');
             
-            if (!$fp) {                
+            if (!$fp) {  
+                /* translators: %s: file path to the package */
                 return sprintf(esc_html__('Could not open file for reading: %s', 'prime-mover'), $file);
             }
         }        
