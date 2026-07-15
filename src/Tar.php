@@ -92,7 +92,7 @@ class Tar extends Archive
         }
 
         if (!$this->fh) {
-            throw new ArchiveIOException('Could not open file for reading: '.$this->file);
+            throw new ArchiveIOException( esc_html( 'Could not open file for reading: ' . $this->file ) );            
         }
         $this->closed = false;
         
@@ -356,7 +356,7 @@ class Tar extends Archive
         $outdir = rtrim($outdir, '/');
         if (!$file_offset) {            
             if (!wp_mkdir_p($outdir)) {
-                throw new ArchiveIOException("Could not create directory '$outdir'");
+                throw new ArchiveIOException( esc_html( "Could not create directory '$outdir'" ) );                
             }
         }        
         $retry_timeout = apply_filters('prime_mover_retry_timeout_seconds', PRIME_MOVER_RETRY_TIMEOUT_SECONDS, __FUNCTION__);        
@@ -396,7 +396,7 @@ class Tar extends Archive
                         do_action('prime_mover_log_processed_events', "File cannot be extracted: $output - ERROR: $extr_error_msg", $blog_id, 'export', __FUNCTION__, $this);
                         continue;                        
                     } else {
-                        throw new ArchiveIOException('Could not open file for writing: ' . $output);
+                        throw new ArchiveIOException( esc_html( 'Could not open file for writing: ' . $output ) );                        
                     }                    
                 }
 
@@ -520,7 +520,7 @@ class Tar extends Archive
             }
 
             if (!$this->fh) {
-                throw new ArchiveIOException('Could not open file for writing: '.$this->file);
+                throw new ArchiveIOException( esc_html( 'Could not open file for writing: ' . $this->file ) );                
             }
         }
         $this->writeaccess = true;
@@ -749,7 +749,7 @@ class Tar extends Archive
         }
 
         if (!@file_put_contents($file, $this->getArchive())) {
-            throw new ArchiveIOException('Could not write to file: '.$file);
+            throw new ArchiveIOException( esc_html( 'Could not write to file: ' . $file ) );            
         }
     }
 
@@ -794,7 +794,7 @@ class Tar extends Archive
             $fwrite_error_msg = error_get_last();
             if (is_array($fwrite_error_msg) && !empty($fwrite_error_msg['message'])) {
                 $fwrite_error_detail = $fwrite_error_msg['message'];
-                throw new ArchiveIOException($fwrite_error_detail);
+                throw new ArchiveIOException( esc_html( $fwrite_error_detail ) );                
             } else {
                 throw new ArchiveIOException('Failed to write to archive stream');
             }
